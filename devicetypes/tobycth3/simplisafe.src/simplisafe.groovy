@@ -3,7 +3,7 @@
  *
  *  Copyright 2015 Felix Gorodishter
  *  Modifications by Scott Silence
- *	Modifications by Toby Harris - 2/7/2018
+ *	Modifications by Toby Harris - 2/10/2018
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
  *  in compliance with the License. You may obtain a copy of the License at:
@@ -26,21 +26,24 @@ metadata {
 	definition (name: "SimpliSafe", namespace: "tobycth3", author: "Toby Harris") {
 		capability "Alarm"
 		capability "Polling"
-        capability "Contact Sensor"
+       // capability "Contact Sensor"
 		capability "Carbon Monoxide Detector"
 		capability "Presence Sensor"
 		capability "Smoke Detector"
         capability "Temperature Measurement"
         capability "Water Sensor"
+		command "off"
 		command "home"
 		command "away"
-		command "off"
 		command "update_state"
+		attribute "events", "string"
+		attribute "messages", "string"
+		attribute "status", "string"
 	}
 
 tiles(scale: 2) {
-    multiAttributeTile(name:"alarm", type: "generic", width: 6, height: 4){
-        tileAttribute ("device.alarm", key: "PRIMARY_CONTROL") {
+    multiAttributeTile(name:"status", type: "generic", width: 6, height: 4){
+        tileAttribute ("device.status", key: "PRIMARY_CONTROL") {
             attributeState "off", label:'${name}', icon: "st.security.alarm.off", backgroundColor: "#505050"
             attributeState "home", label:'${name}', icon: "st.Home.home4", backgroundColor: "#00BEAC"
             attributeState "away", label:'${name}', icon: "st.security.alarm.on", backgroundColor: "#008CC1"
@@ -49,10 +52,16 @@ tiles(scale: 2) {
 			attributeState "pending home", label:'${name}', icon: "st.security.alarm.on", backgroundColor: "#ffffff"
 			attributeState "away_count", label:'countdown', icon: "st.security.alarm.on", backgroundColor: "#ffffff"
 			attributeState "failed set", label:'error', icon: "st.secondary.refresh", backgroundColor: "#d44556"
+			attributeState "alert", label:'${name}', icon: "st.alarm.beep.beep", backgroundColor: "#ffa81e"
+			attributeState "alarm", label:'${name}', icon: "st.security.alarm.alarm", backgroundColor: "#d44556"
+			attributeState "carbonMonoxide", label:'${name}', icon: "st.alarm.carbon-monoxide.carbon-monoxide", backgroundColor: "#d44556"
+			attributeState "smoke", label:'${name}', icon: "st.alarm.smoke.smoke", backgroundColor: "#d44556"
+			attributeState "temperature", label:'${name}', icon: "st.alarm.temperature.freeze", backgroundColor: "#d44556"
+			attributeState "water", label:'${name}', icon: "st.alarm.water.wet", backgroundColor: "#d44556"
         }
 		
-		tileAttribute("device.events", key: "SECONDARY_CONTROL", wordWrap: true) {
-			attributeState("default", label:'${currentValue}')
+		tileAttribute("device.temperature", key: "SECONDARY_CONTROL", wordWrap: true) {
+			attributeState("temperature", label:'${currentValue}', unit:"dF", defaultState: true)
 		}
     }	
 	
@@ -77,22 +86,12 @@ tiles(scale: 2) {
 		state ("home", label:"home", action:"home", icon: "st.Home.home4", backgroundColor: "#008CC1", nextState: "pending")
 		state ("pending", label:"pending", icon: "st.Home.home4", backgroundColor: "#ffffff")
 	}
-		valueTile("temperature", "device.temperature", width: 2, height: 2, canChangeIcon: false, inactiveLabel: true, canChangeBackground: false) {
-			state ("temperature", label:'${currentValue}', unit: "dF", icon: "st.alarm.temperature.normal", 
-			backgroundColors: [
-			[value: 0, color: "#ffffff"],
-			[value: 41, color: "#d44556"],
-			[value: 70, color: "#50C65F"],
-			[value: 95, color: "#d44556"]
-				]
-			)
+		valueTile("events", "device.events", width: 6, height: 2, canChangeIcon: false, inactiveLabel: true, canChangeBackground: false, decoration: "flat", wordWrap: true) {
+			state ("default", label:'${currentValue}')
 		}
-	standardTile("refresh", "device.alarm", inactiveLabel: false, decoration: "flat", width: 2, height: 2) {
-		state "default", action:"update_state", icon:"st.secondary.refresh"
-	}
 
-		main(["alarm"])
-		details(["alarm","off", "away", "home", "temperature", "refresh"])
+		main(["status"])
+		details(["status","off", "away", "home", "events"])
 	}
 }
 
@@ -184,21 +183,92 @@ def poll() {
     log.info "Executing polling..."
    
 	httpGet ([uri: getAPIUrl("refresh"), headers: state.auth.respAuthHeader, contentType: "application/json; charset=utf-8"]) { response ->
-        sendEvent(name: "alarm", value: response.data.subscription.location.system.alarmState)
-		sendEvent(name: "temperature", value: response.data.subscription.location.system.temperature)
-        log.info "Alarm State1: $response.data.subscription.location.system.alarmState"
+        
+		//Check alarm state
+		sendEvent(name: "alarm", value: response.data.subscription.location.system.alarmState)
+		sendEvent(name: "status", value: response.data.subscription.location.system.alarmState)
+		log.info "Alarm State1: $response.data.subscription.location.system.alarmState"
+		
+		//Check temperature
+		if (response.data.subscription.location.system.temperature != null) {
+		sendEvent(name: "temperature", value: response.data.subscription.location.system.temperature, unit: "dF")
 		log.info "Temperature: $response.data.subscription.location.system.temperature"
+		}
+		
+		//Check messages
+       	if (settings.ssversion == "ss3") {
+            if (response.data.subscription.location.system.messages[0] != null)
+            {
+				sendEvent(name: "status", value: "alert")
+                sendEvent(name: "messages", value: response.data.subscription.location.system.messages[0].text)
+                log.info "Messages: ${response.data.subscription.location.system.messages[0].text}"
+				
+				//Check for alerts
+				if (response.data.subscription.location.system.messages[0].category == "alarm")
+				{
+				sendEvent(name: "status", value: "alarm")
+				log.info "Message category: ${response.data.subscription.location.system.messages[0].category}"
+				
+					//Carbon Monoxide sensor alerts
+					if (response.data.subscription.location.system.messages[0].data.sensorType == "C0 Detector")
+					{
+					sendEvent(name: "carbonMonoxide", value: "detected")
+					sendEvent(name: "status", value: "carbonMonoxide")
+					log.info "Message sensor: ${response.data.subscription.location.system.messages[0].data.sensorType}"
+					}
+					
+					//Smoke sensor alerts
+					if (response.data.subscription.location.system.messages[0].data.sensorType == "Smoke Detector")
+					{
+					sendEvent(name: "smoke", value: "detected")
+					sendEvent(name: "status", value: "smoke")
+					log.info "Message sensor: ${response.data.subscription.location.system.messages[0].data.sensorType}"
+					}
+					
+				
+					//Temperature sensor alerts
+					//if (response.data.subscription.location.system.messages[0].data.sensorType == "Freeze Sensor")
+					//{
+					//sendEvent(name: "temperature", value: "??")
+					//sendEvent(name: "status", value: "temperature")
+					//log.info "Message sensor: ${response.data.subscription.location.system.messages[0].data.sensorType}"
+					//}
+
+					//Water sensor alerts
+					if (response.data.subscription.location.system.messages[0].data.sensorType == "Water Sensor")
+					{
+					sendEvent(name: "water", value: "wet")
+					sendEvent(name: "status", value: "water")
+					log.info "Message sensor: ${response.data.subscription.location.system.messages[0].data.sensorType}"
+					}
+				}	
+            }
+            else
+            {
+				sendEvent(name: "messages", value: "none")
+				sendEvent(name: "carbonMonoxide", value: "clear")
+				sendEvent(name: "smoke", value: "clear")
+				//sendEvent(name: "temperature", value: "??")
+				sendEvent(name: "water", value: "dry")
+                log.info "Messages: ${response.data.subscription.location.system.messages}"
+            }
+      	}
     }
 	
-	httpGet ([uri: getAPIUrl("events"), headers: state.auth.respAuthHeader, contentType: "application/json; charset=utf-8"]) { response ->
-		sendEvent(name: "events", value: response.data.events[0].info)
-		log.info "Events: ${response.data.events[0].info}"
+		//Check events
+		httpGet ([uri: getAPIUrl("events"), headers: state.auth.respAuthHeader, contentType: "application/json; charset=utf-8"]) { response ->
+		if (response.data.events[0] != null) {
+			sendEvent(name: "events", value: response.data.events[0].messageBody)
+			log.info "Events: ${response.data.events[0].messageBody}"
     }
+}	
 	
+	//Set presence
 	def alarm_state = device.currentValue("alarm")
 	def alarm_presence = ['OFF':'present', 'HOME':'present', 'AWAY':'not present']
 		sendEvent(name: 'presence', value: alarm_presence.getAt(alarm_state))
 	
+
     //log.info "Alarm State2: $response"
     //apiLogout()
 }
